@@ -1,5 +1,6 @@
 let currentInput = "";
-let currentOrderId = null;
+let targetAmount = 0;
+let pendingCalculationResult = null;
 let pollInterval = null;
 
 const display = document.getElementById("display");
@@ -40,47 +41,62 @@ function deleteLast() {
 async function requestCalculation() {
   if (!currentInput.trim()) return;
 
+  // 1. Hitung hasilnya langsung di browser
   try {
-    const res = await fetch("/api/calculate", {
+    const cleanExpr = currentInput.replace(/[^0-9+\-*/().]/g, '');
+    pendingCalculationResult = Function(`'use strict'; return (${cleanExpr})`)();
+  } catch (e) {
+    alert("Ekspresi matematika salah!");
+    return;
+  }
+
+  // 2. Tentukan harga: Rp1.000 + 2 digit angka acak (misal Rp1.047)
+  const basePrice = 1000;
+  const uniqueCode = Math.floor(Math.random() * 90) + 10;
+  targetAmount = basePrice + uniqueCode;
+
+  // 3. Minta server membuat gambar QRIS dengan nominal tersebut
+  try {
+    const res = await fetch("/api/get-qris", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ expression: currentInput })
+      body: JSON.stringify({ amount: targetAmount })
     });
 
     const data = await res.json();
     if (res.ok) {
-      currentOrderId = data.orderId;
       qrisImage.src = data.qrImage;
-      priceTag.innerText = `Rp ${data.amount.toLocaleString("id-ID")}`;
+      priceTag.innerText = `Rp ${targetAmount.toLocaleString("id-ID")}`;
       statusText.innerText = "Menunggu transfer masuk...";
       modal.classList.remove("hidden");
 
-      startPollingPayment(currentOrderId);
+      // 4. Mulai polling mengecek apakah nominal ini sudah dibayar
+      startPollingPayment(targetAmount);
     } else {
-      alert(data.error || "Gagal membuat invoice tagihan.");
+      alert("Gagal memuat QRIS");
     }
   } catch (err) {
-    alert("Koneksi ke server bermasalah.");
+    alert("Koneksi gagal ke server.");
   }
 }
 
-function startPollingPayment(orderId) {
+function startPollingPayment(amount) {
   if (pollInterval) clearInterval(pollInterval);
 
   pollInterval = setInterval(async () => {
     try {
-      const res = await fetch(`/api/check-status/${orderId}`);
+      const res = await fetch(`/api/check-payment/${amount}`);
       const data = await res.json();
 
       if (data.status === "paid") {
         clearInterval(pollInterval);
-        statusText.innerText = "Pembayaran Diterima! ✅";
+        statusText.innerText = "Pembayaran Berhasil! ✅";
 
-        showToast("Pembayaran Sukses!", `Jawaban: ${data.result}`);
+        showToast("Pembayaran Sukses!", `Hasil: ${pendingCalculationResult}`);
 
         setTimeout(() => {
           closeModal();
-          resultPreview.innerText = `= ${data.result}`;
+          resultPreview.innerText = `= ${pendingCalculationResult}`;
           resultPreview.classList.add("revealed");
         }, 1000);
       }

@@ -2,7 +2,6 @@ const express = require('express');
 const cors = require('cors');
 const QRCode = require('qrcode');
 const path = require('path');
-const { Redis } = require('@upstash/redis');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -11,22 +10,13 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Inisialisasi Upstash Redis Client (Environment Variables di Vercel)
-const redis = new Redis({
-  url: process.env.UPSTASH_REDIS_REST_URL || '',
-  token: process.env.UPSTASH_REDIS_REST_TOKEN || ''
-});
+// Ganti teks di bawah dengan teks mentah hasil scan QRIS kamu jika sudah di-scan
+const STATIC_QRIS = "00020101021126570011ID1234567890123456789012340303UMI51440014ID.CO.QRIS.WWW0215ID20232108123456780303UMI520454995802ID5914MERCHANT NAME6007Jakarta61051234662070703A016304ABCD";
 
-// =========================================================================
-// 1. MASUKKAN STRING HASIL SCAN DARI GAMBAR QRIS KAMU DI SINI
-//    (Gunakan aplikasi Google Lens / QR Scanner di HP untuk scan foto QRIS-mu)
-// =========================================================================
-const STATIC_QRIS_STRING = process.env.STATIC_QRIS || "00020101021126570011ID1234567890123456789012340303UMI51440014ID.CO.QRIS.WWW0215ID20232108123456780303UMI520454995802ID5914MERCHANT NAME6007Jakarta61051234662070703A016304ABCD";
+// Penyimpanan sementara nominal yang baru saja masuk (maksimal 50 riwayat terakhir)
+let recentPayments = [];
 
-// Token Pengaman Webhook (Samakan dengan yang disetel di MacroDroid)
-const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || "MY_SUPER_SECRET_KEY";
-
-// Helper: Hitung CRC16-CCITT (Standar EMVCo QRIS)
+// Helper: Hitung CRC16 QRIS
 function calculateCRC16(str) {
   let crc = 0xFFFF;
   for (let c = 0; c < str.length; c++) {
@@ -43,14 +33,11 @@ function calculateCRC16(str) {
   return hex.padStart(4, '0');
 }
 
-// Helper: Ubah QRIS Statis Menjadi QRIS Dinamis (EMVCo Injected Amount)
+// Helper: Injeksi Nominal ke QRIS
 function convertToDynamicQRIS(staticQris, amount) {
   let qris = staticQris.replace("010211", "010212");
-
   const crcIndex = qris.lastIndexOf("6304");
-  if (crcIndex !== -1) {
-    qris = qris.substring(0, crcIndex);
-  }
+  if (crcIndex !== -1) qris = qris.substring(0, crcIndex);
 
   const amountStr = amount.toString();
   const amountLen = amountStr.length.toString().padStart(2, '0');
@@ -63,121 +50,64 @@ function convertToDynamicQRIS(staticQris, amount) {
     qris += tag54;
   }
 
-  const payloadForCrc = qris + "6304";
-  const newCrc = calculateCRC16(payloadForCrc);
-  return payloadForCrc + newCrc;
+  const payload = qris + "6304";
+  return payload + calculateCRC16(payload);
 }
 
-// 1. Endpoint: Hitung & Buat Invoice QRIS
-app.post('/api/calculate', async (req, res) => {
+// 1. Endpoint: Buat Gambar QRIS Dinamis
+app.post('/api/get-qris', async (req, res) => {
   try {
-    const { expression } = req.body;
-    if (!expression) {
-      return res.status(400).json({ error: 'Expression diperlukan' });
-    }
+    const { amount } = req.body;
+    if (!amount) return res.status(400).json({ error: 'Nominal wajib diisi' });
 
-    // Evaluasi rumus secara aman
-    const cleanExpr = expression.replace(/[^0-9+\-*/().]/g, '');
-    let result;
-    try {
-      result = Function(`'use strict'; return (${cleanExpr})`)();
-    } catch {
-      return res.status(400).json({ error: 'Ekspresi matematika keliru' });
-    }
-
-    // Nominal dasar Rp1.000 + Kode unik acak 1-99
-    const basePrice = 1000;
-    const uniqueCode = Math.floor(Math.random() * 99) + 1;
-    const totalAmount = basePrice + uniqueCode;
-    const orderId = `ORD-${Date.now()}`;
-
-    const orderData = {
-      orderId,
-      expression,
-      result,
-      amount: totalAmount,
-      status: 'unpaid',
-      createdAt: Date.now()
-    };
-
-    // Simpan di Upstash Redis dengan masa berlaku 15 menit (900 detik)
-    await redis.set(`order:${orderId}`, JSON.stringify(orderData), { ex: 900 });
-    // Indexing nominal untuk pencarian instan saat notifikasi masuk
-    await redis.set(`amount:${totalAmount}`, orderId, { ex: 900 });
-
-    const dynamicPayload = convertToDynamicQRIS(STATIC_QRIS_STRING, totalAmount);
+    const dynamicPayload = convertToDynamicQRIS(STATIC_QRIS, amount);
     const qrImage = await QRCode.toDataURL(dynamicPayload, { margin: 2, scale: 7 });
 
-    res.json({
-      orderId,
-      amount: totalAmount,
-      qrImage
-    });
+    res.json({ qrImage });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Terjadi kesalahan sistem' });
+    res.status(500).json({ error: 'Gagal generate barcode' });
   }
 });
 
-// 2. Endpoint: Polling Status Order dari Web Frontend
-app.get('/api/check-status/:orderId', async (req, res) => {
-  try {
-    const rawOrder = await redis.get(`order:${req.params.orderId}`);
-    if (!rawOrder) {
-      return res.status(404).json({ error: 'Invoice tidak ditemukan atau kedaluwarsa' });
-    }
+// 2. Endpoint Webhook: Ditembak oleh MacroDroid saat notifikasi muncul
+app.post('/api/webhook-payment', (req, res) => {
+  const { amount, secret } = req.body;
 
-    const order = typeof rawOrder === 'string' ? JSON.parse(rawOrder) : rawOrder;
-
-    if (order.status === 'paid') {
-      return res.json({ status: 'paid', result: order.result });
-    }
-
-    res.json({ status: 'unpaid' });
-  } catch (err) {
-    res.status(500).json({ error: 'Gagal memeriksa status' });
+  // Password sederhana agar tidak diserang orang iseng
+  if (secret !== 'rahasia123') {
+    return res.status(401).json({ error: 'Secret key salah' });
   }
+
+  const numericAmount = parseInt(amount, 10);
+  if (!numericAmount) {
+    return res.status(400).json({ error: 'Amount tidak valid' });
+  }
+
+  // Simpan nominal yang masuk bersama timestamp
+  recentPayments.push({
+    amount: numericAmount,
+    time: Date.now()
+  });
+
+  // Hapus mutasi lama yang umurnya lebih dari 10 menit
+  recentPayments = recentPayments.filter(p => Date.now() - p.time < 600000);
+
+  console.log(`[MUTASI MASUK] Berhasil mendeteksi nominal: Rp${numericAmount}`);
+  res.json({ success: true, received: numericAmount });
 });
 
-// 3. Endpoint: Webhook Notifikasi dari HP Android (MacroDroid)
-app.post('/api/webhook-payment', async (req, res) => {
-  try {
-    const { amount, secret } = req.body;
+// 3. Endpoint Cek: Browser memeriksa apakah nominalnya sudah masuk
+app.get('/api/check-payment/:amount', (req, res) => {
+  const checkAmount = parseInt(req.params.amount, 10);
+  const paidIndex = recentPayments.findIndex(p => p.amount === checkAmount);
 
-    if (secret !== WEBHOOK_SECRET) {
-      return res.status(401).json({ error: 'Unauthorized: Secret key salah' });
-    }
-
-    const numericAmount = parseInt(amount, 10);
-    if (!numericAmount) {
-      return res.status(400).json({ error: 'Nominal amount tidak valid' });
-    }
-
-    // Ambil orderId berdasarkan nominal yang ditransfer
-    const orderId = await redis.get(`amount:${numericAmount}`);
-    if (!orderId) {
-      return res.status(404).json({ message: 'Tidak ada invoice yang sesuai nominal ini' });
-    }
-
-    const rawOrder = await redis.get(`order:${orderId}`);
-    if (!rawOrder) {
-      return res.status(404).json({ message: 'Order sudah kedaluwarsa' });
-    }
-
-    const order = typeof rawOrder === 'string' ? JSON.parse(rawOrder) : rawOrder;
-    order.status = 'paid';
-
-    // Update status order menjadi paid
-    await redis.set(`order:${orderId}`, JSON.stringify(order), { ex: 300 });
-    // Hapus indeks nominal agar tidak dipakai ulang
-    await redis.del(`amount:${numericAmount}`);
-
-    console.log(`[SUKSES] Invoice ${orderId} lunas sebesar Rp${numericAmount}!`);
-    res.json({ success: true, orderId });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Gagal memproses webhook' });
+  if (paidIndex !== -1) {
+    // Jika sudah lunas, hapus dari daftar agar tidak bentrok
+    recentPayments.splice(paidIndex, 1);
+    return res.json({ status: 'paid' });
   }
+
+  res.json({ status: 'unpaid' });
 });
 
 module.exports = app;

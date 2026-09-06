@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Paywall Calculator</title>
+  <link rel="stylesheet" href="style.css" />
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+  <div class="ambient-glow"></div>
+
+  <!-- Toast Notification Alert -->
+  <div id="toast" class="toast hidden">
+    <div class="toast-icon">✨</div>
+    <div class="toast-body">
+      <h4 id="toast-title">Pembayaran Diterima!</h4>
+      <p id="toast-message">Hasil perhitungan telah terbuka.</p>
+    </div>
+  </div>
+
+  <main class="calculator-card">
+    <header class="calc-header">
+      <span class="badge">Dynamic QRIS Paywall</span>
+      <h2>Smart Calculator</h2>
+      <p>Hitung ekspresi apa saja, verifikasi instan otomatis</p>
+    </header>
+
+    <div class="display-container">
+      <input type="text" id="display" placeholder="0" readonly />
+      <div id="result-preview" class="result-placeholder">Hasil terkunci 🔒</div>
+    </div>
+
+    <div class="keypad">
+      <button class="btn btn-action" onclick="clearDisplay()">AC</button>
+      <button class="btn btn-action" onclick="appendValue('(')">(</button>
+      <button class="btn btn-action" onclick="appendValue(')')">)</button>
+      <button class="btn btn-op" onclick="appendValue('/')">÷</button>
+
+      <button class="btn" onclick="appendValue('7')">7</button>
+      <button class="btn" onclick="appendValue('8')">8</button>
+      <button class="btn" onclick="appendValue('9')">9</button>
+      <button class="btn btn-op" onclick="appendValue('*')">×</button>
+
+      <button class="btn" onclick="appendValue('4')">4</button>
+      <button class="btn" onclick="appendValue('5')">5</button>
+      <button class="btn" onclick="appendValue('6')">6</button>
+      <button class="btn btn-op" onclick="appendValue('-')">-</button>
+
+      <button class="btn" onclick="appendValue('1')">1</button>
+      <button class="btn" onclick="appendValue('2')">2</button>
+      <button class="btn" onclick="appendValue('3')">3</button>
+      <button class="btn btn-op" onclick="appendValue('+')">+</button>
+
+      <button class="btn" onclick="appendValue('0')">0</button>
+      <button class="btn" onclick="appendValue('.')">.</button>
+      <button class="btn btn-del" onclick="deleteLast()">⌫</button>
+      <button class="btn btn-primary" onclick="requestCalculation()">=</button>
+    </div>
+  </main>
+
+  <!-- Modal QRIS Payment -->
+  <div id="payment-modal" class="modal-backdrop hidden">
+    <div class="modal-box">
+      <div class="modal-header">
+        <h3>Selesaikan Pembayaran</h3>
+        <button class="close-btn" onclick="closeModal()">✕</button>
+      </div>
+
+      <p class="modal-desc">Pindai QRIS dinamis di bawah ini. Sistem memvalidasi saldo masuk secara real-time.</p>
+      
+      <div class="qr-wrapper">
+        <img id="qris-image" src="" alt="QRIS Dinamis" />
+      </div>
+
+      <div class="price-box">
+        <span>Total Bayar (Pas):</span>
+        <strong id="price-tag">Rp 0</strong>
+      </div>
+      <small class="note-warning">⚠️ Wajib transfer tepat hingga digit terakhir agar otomatis terbaca.</small>
+
+      <div class="status-indicator">
+        <span class="spinner"></span>
+        <span id="payment-status-text">Menunggu transfer masuk...</span>
+      </div>
+    </div>
+  </div>
+
+  <script src="script.js"></script>
+</body>
+</html>
